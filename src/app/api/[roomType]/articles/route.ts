@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { isValidRoomType, RoomType } from "@/lib/constants";
-import { loadStoredData } from "@/lib/storage";
-import { autoMarkOldAsSeen } from "@/lib/seen";
+import {
+  loadStoredDataFromSupabase,
+  autoMarkOldAsSeenInSupabase,
+} from "@/lib/supabase/database";
 
 export async function GET(
   _request: Request,
@@ -13,7 +15,7 @@ export async function GET(
     return NextResponse.json({ error: "Invalid room type" }, { status: 400 });
   }
 
-  const data = await loadStoredData(roomType as RoomType);
+  const data = await loadStoredDataFromSupabase(roomType as RoomType);
 
   if (!data) {
     return NextResponse.json({ boards: [], lastUpdated: null });
@@ -27,7 +29,7 @@ export async function GET(
       subject: a.subject,
     }))
   );
-  await autoMarkOldAsSeen(roomType as RoomType, allArticles);
+  await autoMarkOldAsSeenInSupabase(roomType as RoomType, allArticles);
 
   return NextResponse.json(data);
 }
