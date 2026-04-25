@@ -1,6 +1,6 @@
 import { createClient } from "./server";
 import { StoredData, BoardArticles, Article } from "../types";
-import { RoomType, ROOM_CONFIG } from "../constants";
+import { RoomType } from "../constants";
 
 // =====================================================
 // Articles & Boards
