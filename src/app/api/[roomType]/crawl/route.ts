@@ -5,7 +5,7 @@ import {
   loadStoredDataFromSupabase,
   saveDataToSupabase,
   mergeBoards,
-  autoMarkOldAsSeenInSupabase,
+  autoMarkOldAsSeen,
   deduplicateByTitleInSupabase,
 } from "@/lib/supabase/database";
 import { Article, CrawlResult, CrawlStats } from "@/lib/types";
@@ -25,7 +25,6 @@ export async function POST(
   try {
     const oldData = await loadStoredDataFromSupabase(rt);
 
-    // 저장된 글의 articleId 맵 → "이후"의 기준선
     const knownByMenuId = new Map<number, Set<number>>();
     if (oldData?.boards) {
       for (const b of oldData.boards) {
@@ -36,17 +35,14 @@ export async function POST(
       }
     }
 
-    // 기준선 이후의 새 글만 수집 (페이지네이션 자동 확장)
     const { boards: freshBoards } = await crawlByRoomType(rt, knownByMenuId);
     const now = new Date().toISOString();
 
-    // 병합 전 "순수 신규"를 보드별로 저장 (통계·알림용)
     const newArticlesByBoard: Record<number, Article[]> = {};
     for (const fb of freshBoards) {
       newArticlesByBoard[fb.menuId] = [...fb.articles];
     }
 
-    // 기존 저장본과 병합해 누적
     const mergedBoards = mergeBoards(oldData?.boards ?? [], freshBoards);
 
     await saveDataToSupabase(rt, {
@@ -54,17 +50,8 @@ export async function POST(
       lastUpdated: now,
     });
 
-    // 7일 이상 된 글 자동 읽음 처리 + 제목 인덱스 구축
-    const allArticles = mergedBoards.flatMap((b) =>
-      b.articles.map((a) => ({
-        articleId: a.articleId,
-        writeDateTimestamp: a.writeDateTimestamp,
-        subject: a.subject,
-      }))
-    );
-    await autoMarkOldAsSeenInSupabase(rt, allArticles);
+    await autoMarkOldAsSeen(rt);
 
-    // 새 글 중 제목이 이미 seen된 글과 겹치는 재업로드는 자동 seen
     const newForDedup: { articleId: number; subject: string }[] = [];
     for (const menuId of Object.keys(newArticlesByBoard)) {
       for (const a of newArticlesByBoard[Number(menuId)]) {

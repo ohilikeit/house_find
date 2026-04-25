@@ -3,7 +3,63 @@ import { StoredData, BoardArticles, Article } from "../types";
 import { RoomType } from "../constants";
 
 // =====================================================
-// Articles & Boards
+// Types
+// =====================================================
+
+export type SeenMap = Record<number, number>;
+export type BookmarkMap = Record<number, number>;
+
+export interface RoomDataBundle {
+  boards: BoardArticles[];
+  seen: SeenMap;
+  bookmarks: BookmarkMap;
+  lastUpdated: string | null;
+}
+
+interface RoomDataRPCResponse {
+  boards: BoardArticles[];
+  seen: Record<string, number>;
+  bookmarks: Record<string, number>;
+  lastUpdated: string | null;
+}
+
+// =====================================================
+// 페이지 로드용: 단일 RPC 호출로 모든 초기 데이터 반환
+// =====================================================
+
+export async function getRoomDataBundle(
+  roomType: RoomType
+): Promise<RoomDataBundle> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("get_room_data", {
+    p_room_type: roomType,
+  });
+
+  if (error) {
+    console.error("get_room_data RPC error:", error);
+    return { boards: [], seen: {}, bookmarks: {}, lastUpdated: null };
+  }
+
+  const payload = (data ?? {}) as RoomDataRPCResponse;
+
+  return {
+    boards: payload.boards ?? [],
+    seen: keyToNumberMap(payload.seen),
+    bookmarks: keyToNumberMap(payload.bookmarks),
+    lastUpdated: payload.lastUpdated ?? null,
+  };
+}
+
+function keyToNumberMap(obj: Record<string, number>): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const [k, v] of Object.entries(obj ?? {})) {
+    out[Number(k)] = v;
+  }
+  return out;
+}
+
+// =====================================================
+// 크롤링용: 기존 boards 로딩 (seen/bookmarks 불필요)
 // =====================================================
 
 export async function loadStoredDataFromSupabase(
@@ -11,7 +67,6 @@ export async function loadStoredDataFromSupabase(
 ): Promise<StoredData | null> {
   const supabase = await createClient();
 
-  // Get boards for this room type
   const { data: boardsData, error: boardsError } = await supabase
     .from("boards")
     .select("menu_id, name, fetched_at")
@@ -26,7 +81,6 @@ export async function loadStoredDataFromSupabase(
     return null;
   }
 
-  // Get all articles for this room type
   const { data: articlesData, error: articlesError } = await supabase
     .from("articles")
     .select("*")
@@ -38,7 +92,6 @@ export async function loadStoredDataFromSupabase(
     return null;
   }
 
-  // Group articles by menu_id
   const articlesByMenu = new Map<number, Article[]>();
   for (const a of articlesData || []) {
     const article: Article = {
@@ -59,7 +112,6 @@ export async function loadStoredDataFromSupabase(
     articlesByMenu.get(a.menu_id)!.push(article);
   }
 
-  // Build boards array
   const boards: BoardArticles[] = boardsData.map((b) => ({
     menuId: b.menu_id,
     menuName: b.name,
@@ -67,7 +119,6 @@ export async function loadStoredDataFromSupabase(
     fetchedAt: b.fetched_at || new Date().toISOString(),
   }));
 
-  // Get last updated time from crawl_metadata
   const { data: metaData } = await supabase
     .from("crawl_metadata")
     .select("last_updated")
@@ -86,15 +137,12 @@ export async function saveDataToSupabase(
 ): Promise<void> {
   const supabase = await createClient();
 
-  // Upsert articles
   for (const board of data.boards) {
-    // Update board fetched_at
     await supabase
       .from("boards")
       .update({ fetched_at: board.fetchedAt })
       .eq("menu_id", board.menuId);
 
-    // Upsert articles
     const articlesToUpsert = board.articles.map((a) => ({
       article_id: a.articleId,
       menu_id: a.menuId,
@@ -120,7 +168,6 @@ export async function saveDataToSupabase(
     }
   }
 
-  // Update crawl metadata
   const totalArticles = data.boards.reduce(
     (sum, b) => sum + b.articles.length,
     0
@@ -138,276 +185,127 @@ export async function saveDataToSupabase(
 }
 
 // =====================================================
-// Seen Articles
+// Mutations: 모두 RPC 한 번으로 처리
 // =====================================================
 
-export type SeenMap = Record<number, number>;
-
-export async function loadSeenFromSupabase(
-  roomType: RoomType
-): Promise<SeenMap> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("seen_articles")
-    .select("article_id, seen_at")
-    .eq("room_type", roomType);
-
-  if (error) {
-    console.error("Error loading seen:", error);
-    return {};
-  }
-
-  const seen: SeenMap = {};
-  for (const row of data || []) {
-    seen[row.article_id] = row.seen_at;
-  }
-  return seen;
-}
-
-export async function saveSeenToSupabase(
-  roomType: RoomType,
-  articleIds: number[],
-  timestamp: number
-): Promise<void> {
-  const supabase = await createClient();
-
-  const rows = articleIds.map((id) => ({
-    article_id: id,
-    room_type: roomType,
-    seen_at: timestamp,
-  }));
-
-  if (rows.length > 0) {
-    await supabase
-      .from("seen_articles")
-      .upsert(rows, { onConflict: "article_id,room_type" });
-  }
-}
-
-export async function markArticlesSeenInSupabase(
+export async function markArticlesSeen(
   roomType: RoomType,
   ids: number[],
   articles?: { articleId: number; subject: string }[]
-): Promise<SeenMap> {
+): Promise<void> {
+  if (ids.length === 0) return;
+
   const supabase = await createClient();
-  const now = Date.now();
+  const subjectMap = new Map(
+    (articles ?? []).map((a) => [a.articleId, a.subject])
+  );
+  const subjects = ids.map((id) => subjectMap.get(id) ?? null);
 
-  // Get existing seen
-  const seen = await loadSeenFromSupabase(roomType);
+  const { error } = await supabase.rpc("mark_articles_seen", {
+    p_room_type: roomType,
+    p_ids: ids,
+    p_subjects: subjects,
+  });
 
-  // Mark new ones as seen
-  const newIds = ids.filter((id) => !seen[id]);
-  if (newIds.length > 0) {
-    await saveSeenToSupabase(roomType, newIds, now);
-    for (const id of newIds) {
-      seen[id] = now;
-    }
+  if (error) {
+    console.error("mark_articles_seen RPC error:", error);
   }
-
-  // Save title index
-  if (articles) {
-    const titleRows = articles
-      .filter((a) => {
-        const key = normalizeTitle(a.subject);
-        return key.length > 5;
-      })
-      .map((a) => ({
-        room_type: roomType,
-        normalized_title: normalizeTitle(a.subject),
-        article_id: a.articleId,
-      }));
-
-    if (titleRows.length > 0) {
-      await supabase
-        .from("seen_titles")
-        .upsert(titleRows, { onConflict: "room_type,normalized_title" });
-    }
-  }
-
-  return seen;
 }
+
+export async function toggleBookmark(
+  roomType: RoomType,
+  articleId: number
+): Promise<{ added: boolean }> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("toggle_bookmark", {
+    p_room_type: roomType,
+    p_article_id: articleId,
+  });
+
+  if (error) {
+    console.error("toggle_bookmark RPC error:", error);
+    return { added: false };
+  }
+
+  return { added: Boolean(data) };
+}
+
+export async function autoMarkOldAsSeen(roomType: RoomType): Promise<void> {
+  const supabase = await createClient();
+  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+  const { error } = await supabase.rpc("auto_mark_old_as_seen", {
+    p_room_type: roomType,
+    p_threshold_ms: oneWeekAgo,
+  });
+
+  if (error) {
+    console.error("auto_mark_old_as_seen RPC error:", error);
+  }
+}
+
+// =====================================================
+// 크롤링 dedup: 새 글 중 기존 seen된 제목과 겹치면 자동 seen
+// =====================================================
 
 function normalizeTitle(subject: string): string {
   return subject
     .replace(/\s+/g, "")
-    .replace(/[^\uAC00-\uD7A3a-zA-Z0-9]/g, "")
+    .replace(/[^가-힣a-zA-Z0-9]/g, "")
     .toLowerCase();
-}
-
-export async function autoMarkOldAsSeenInSupabase(
-  roomType: RoomType,
-  allArticles: {
-    articleId: number;
-    writeDateTimestamp: number;
-    subject?: string;
-  }[]
-): Promise<SeenMap> {
-  const seen = await loadSeenFromSupabase(roomType);
-  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-
-  const oldUnseen = allArticles.filter(
-    (a) => a.writeDateTimestamp < oneWeekAgo && !seen[a.articleId]
-  );
-
-  if (oldUnseen.length > 0) {
-    const supabase = await createClient();
-
-    // Mark old articles as seen with their original timestamp
-    const rows = oldUnseen.map((a) => ({
-      article_id: a.articleId,
-      room_type: roomType,
-      seen_at: a.writeDateTimestamp,
-    }));
-
-    await supabase
-      .from("seen_articles")
-      .upsert(rows, { onConflict: "article_id,room_type" });
-
-    for (const a of oldUnseen) {
-      seen[a.articleId] = a.writeDateTimestamp;
-    }
-
-    // Save titles to index
-    const titleRows = oldUnseen
-      .filter((a) => a.subject && normalizeTitle(a.subject).length > 5)
-      .map((a) => ({
-        room_type: roomType,
-        normalized_title: normalizeTitle(a.subject!),
-        article_id: a.articleId,
-      }));
-
-    if (titleRows.length > 0) {
-      await supabase
-        .from("seen_titles")
-        .upsert(titleRows, { onConflict: "room_type,normalized_title" });
-    }
-  }
-
-  return seen;
 }
 
 export async function deduplicateByTitleInSupabase(
   roomType: RoomType,
   newArticles: { articleId: number; subject: string }[]
-): Promise<{ seen: SeenMap; deduped: number[] }> {
-  const supabase = await createClient();
-  const seen = await loadSeenFromSupabase(roomType);
-  const deduped: number[] = [];
-  const now = Date.now();
+): Promise<{ deduped: number[] }> {
+  if (newArticles.length === 0) return { deduped: [] };
 
-  // Get existing title index
+  const supabase = await createClient();
+
   const { data: titleData } = await supabase
     .from("seen_titles")
-    .select("normalized_title, article_id")
+    .select("normalized_title")
     .eq("room_type", roomType);
 
-  const titleIndex = new Map<string, number>();
-  for (const row of titleData || []) {
-    titleIndex.set(row.normalized_title, row.article_id);
-  }
+  const titleIndex = new Set<string>(
+    (titleData ?? []).map((row) => row.normalized_title)
+  );
 
-  // Find duplicates
   const toMarkSeen: number[] = [];
+  const dedupSubjects: { articleId: number; subject: string }[] = [];
+  const newTitles: { normalized_title: string; article_id: number }[] = [];
+
   for (const a of newArticles) {
-    if (seen[a.articleId]) continue;
     const key = normalizeTitle(a.subject);
-    if (key.length > 5 && titleIndex.has(key)) {
+    if (key.length <= 5) continue;
+    if (titleIndex.has(key)) {
       toMarkSeen.push(a.articleId);
-      deduped.push(a.articleId);
-      seen[a.articleId] = now;
+      dedupSubjects.push(a);
+    } else {
+      titleIndex.add(key);
+      newTitles.push({ normalized_title: key, article_id: a.articleId });
     }
   }
 
   if (toMarkSeen.length > 0) {
-    await saveSeenToSupabase(roomType, toMarkSeen, now);
+    await markArticlesSeen(roomType, toMarkSeen, dedupSubjects);
   }
-
-  // Add new titles to index
-  const newTitles = newArticles
-    .filter((a) => {
-      const key = normalizeTitle(a.subject);
-      return key.length > 5 && !titleIndex.has(key);
-    })
-    .map((a) => ({
-      room_type: roomType,
-      normalized_title: normalizeTitle(a.subject),
-      article_id: a.articleId,
-    }));
 
   if (newTitles.length > 0) {
     await supabase
       .from("seen_titles")
-      .upsert(newTitles, { onConflict: "room_type,normalized_title" });
+      .upsert(
+        newTitles.map((t) => ({ ...t, room_type: roomType })),
+        { onConflict: "room_type,normalized_title" }
+      );
   }
 
-  return { seen, deduped };
+  return { deduped: toMarkSeen };
 }
 
 // =====================================================
-// Bookmarks
-// =====================================================
-
-export type BookmarkMap = Record<number, number>;
-
-export async function loadBookmarksFromSupabase(
-  roomType: RoomType
-): Promise<BookmarkMap> {
-  const supabase = await createClient();
-
-  const { data, error } = await supabase
-    .from("bookmarks")
-    .select("article_id, bookmarked_at")
-    .eq("room_type", roomType);
-
-  if (error) {
-    console.error("Error loading bookmarks:", error);
-    return {};
-  }
-
-  const bookmarks: BookmarkMap = {};
-  for (const row of data || []) {
-    bookmarks[row.article_id] = row.bookmarked_at;
-  }
-  return bookmarks;
-}
-
-export async function toggleBookmarkInSupabase(
-  roomType: RoomType,
-  articleId: number
-): Promise<{ bookmarks: BookmarkMap; added: boolean }> {
-  const supabase = await createClient();
-  const bookmarks = await loadBookmarksFromSupabase(roomType);
-
-  if (bookmarks[articleId]) {
-    // Remove bookmark
-    await supabase
-      .from("bookmarks")
-      .delete()
-      .eq("article_id", articleId)
-      .eq("room_type", roomType);
-
-    delete bookmarks[articleId];
-    return { bookmarks, added: false };
-  } else {
-    // Add bookmark
-    const now = Date.now();
-    await supabase.from("bookmarks").upsert(
-      {
-        article_id: articleId,
-        room_type: roomType,
-        bookmarked_at: now,
-      },
-      { onConflict: "article_id,room_type" }
-    );
-
-    bookmarks[articleId] = now;
-    return { bookmarks, added: true };
-  }
-}
-
-// =====================================================
-// Merge Boards (same logic as before)
+// Merge boards (크롤링)
 // =====================================================
 
 export function mergeBoards(

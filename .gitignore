@@ -37,3 +37,4 @@ yarn-error.log*
 
 # oh-my-claudecode runtime
 .omc/
+.env*.local

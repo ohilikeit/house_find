@@ -33,11 +33,6 @@ interface CrawlResult {
   lastUpdated: string;
 }
 
-interface StoredData {
-  boards: BoardArticles[];
-  lastUpdated: string | null;
-}
-
 type SortMode = "latest" | "views" | "comments" | "likes";
 
 // ─── Utilities ───────────────────────────────
@@ -94,30 +89,26 @@ export function RoomListPage({ roomType }: RoomListPageProps) {
   const boardCount = boards_config.length;
   const estimatedTime = boardCount * 2;
 
-  // Load initial data
+  // Load initial data (단일 RPC: get_room_data)
   useEffect(() => {
-    Promise.all([
-      fetch(`/api/${roomType}/articles`).then((r) => r.json()),
-      fetch(`/api/${roomType}/seen`).then((r) => r.json()),
-      fetch(`/api/${roomType}/bookmarks`).then((r) => r.json()),
-    ])
+    fetch(`/api/${roomType}/init`)
+      .then((r) => r.json())
       .then(
-        ([articlesData, seenData, bmData]: [
-          StoredData,
-          { seen: Record<string, number> },
-          { bookmarks: Record<string, number> },
-        ]) => {
-          if (articlesData.boards?.length) {
-            setBoards(articlesData.boards);
-            setLastUpdated(articlesData.lastUpdated);
+        (bundle: {
+          boards: BoardArticles[];
+          seen: Record<string, number>;
+          bookmarks: Record<string, number>;
+          lastUpdated: string | null;
+        }) => {
+          if (bundle.boards?.length) {
+            setBoards(bundle.boards);
+            setLastUpdated(bundle.lastUpdated);
           }
-          if (seenData.seen) {
-            setSeenIds(new Set(Object.keys(seenData.seen).map(Number)));
+          if (bundle.seen) {
+            setSeenIds(new Set(Object.keys(bundle.seen).map(Number)));
           }
-          if (bmData.bookmarks) {
-            setBookmarkIds(
-              new Set(Object.keys(bmData.bookmarks).map(Number))
-            );
+          if (bundle.bookmarks) {
+            setBookmarkIds(new Set(Object.keys(bundle.bookmarks).map(Number)));
           }
         }
       )
@@ -142,9 +133,18 @@ export function RoomListPage({ roomType }: RoomListPageProps) {
       setLastUpdated(data.lastUpdated);
       setProgress("");
 
-      const seenRes = await fetch(`/api/${roomType}/seen`);
-      const seenData = await seenRes.json();
-      setSeenIds(new Set(Object.keys(seenData.seen).map(Number)));
+      // 크롤 후 seen/bookmark 갱신 (autoMark, dedup 결과 반영)
+      const initRes = await fetch(`/api/${roomType}/init`);
+      const bundle = (await initRes.json()) as {
+        seen: Record<string, number>;
+        bookmarks: Record<string, number>;
+      };
+      if (bundle.seen) {
+        setSeenIds(new Set(Object.keys(bundle.seen).map(Number)));
+      }
+      if (bundle.bookmarks) {
+        setBookmarkIds(new Set(Object.keys(bundle.bookmarks).map(Number)));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "크롤링 실패");
       setProgress("");
