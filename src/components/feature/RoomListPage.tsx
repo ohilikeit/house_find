@@ -188,9 +188,10 @@ export function RoomListPage({ roomType }: RoomListPageProps) {
 
   const handleToggleBookmark = useCallback(
     (id: number) => {
+      const wasBookmarked = bookmarkIds.has(id);
       setBookmarkIds((prev) => {
         const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
+        if (wasBookmarked) next.delete(id);
         else next.add(id);
         return next;
       });
@@ -198,9 +199,28 @@ export function RoomListPage({ roomType }: RoomListPageProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
-      }).catch(() => {});
+      })
+        .then((r) => r.json())
+        .then((res: { added: boolean }) => {
+          // 서버 실제 상태로 동기화 (불일치 시 rollback)
+          setBookmarkIds((prev) => {
+            const next = new Set(prev);
+            if (res.added) next.add(id);
+            else next.delete(id);
+            return next;
+          });
+        })
+        .catch(() => {
+          // 네트워크 실패 시 원복
+          setBookmarkIds((prev) => {
+            const next = new Set(prev);
+            if (wasBookmarked) next.add(id);
+            else next.delete(id);
+            return next;
+          });
+        });
     },
-    [roomType]
+    [roomType, bookmarkIds]
   );
 
   // Cleanup timeouts

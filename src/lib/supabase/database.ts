@@ -185,6 +185,40 @@ export async function saveDataToSupabase(
 }
 
 // =====================================================
+// 통합 북마크 조회: 모든 룸 타입의 북마크를 한 번에
+// =====================================================
+
+export interface BookmarkItem {
+  articleId: number;
+  menuId: number;
+  menuName: string;
+  shortName: string;
+  roomType: RoomType;
+  roomLabel: string;
+  subject: string;
+  writerNickname: string;
+  writeDateTimestamp: number;
+  readCount: number;
+  commentCount: number;
+  likeItCount: number;
+  representImage: string;
+  headName: string;
+  bookmarkedAt: number;
+}
+
+export async function getAllBookmarks(): Promise<BookmarkItem[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("get_all_bookmarks");
+
+  if (error) {
+    console.error("get_all_bookmarks RPC error:", error);
+    return [];
+  }
+
+  return (data ?? []) as BookmarkItem[];
+}
+
+// =====================================================
 // Mutations: 모두 RPC 한 번으로 처리
 // =====================================================
 
