@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { isValidRoomType, RoomType } from "@/lib/constants";
-import { loadSeen, markArticlesSeen } from "@/lib/seen";
+import {
+  loadSeenFromSupabase,
+  markArticlesSeenInSupabase,
+} from "@/lib/supabase/database";
 
 export async function GET(
   _request: Request,
@@ -12,7 +15,7 @@ export async function GET(
     return NextResponse.json({ error: "Invalid room type" }, { status: 400 });
   }
 
-  const seen = await loadSeen(roomType as RoomType);
+  const seen = await loadSeenFromSupabase(roomType as RoomType);
   return NextResponse.json({ seen });
 }
 
@@ -32,6 +35,10 @@ export async function POST(
     articles?: { articleId: number; subject: string }[];
   };
 
-  const seen = await markArticlesSeen(roomType as RoomType, ids, articles);
+  const seen = await markArticlesSeenInSupabase(
+    roomType as RoomType,
+    ids,
+    articles
+  );
   return NextResponse.json({ seen });
 }

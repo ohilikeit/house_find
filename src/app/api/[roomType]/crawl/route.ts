@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 import { isValidRoomType, RoomType } from "@/lib/constants";
 import { crawlByRoomType } from "@/lib/crawler";
-import { loadStoredData, saveData, mergeBoards } from "@/lib/storage";
-import { autoMarkOldAsSeen, deduplicateByTitle } from "@/lib/seen";
+import {
+  loadStoredDataFromSupabase,
+  saveDataToSupabase,
+  mergeBoards,
+  autoMarkOldAsSeenInSupabase,
+  deduplicateByTitleInSupabase,
+} from "@/lib/supabase/database";
 import { Article, CrawlResult, CrawlStats } from "@/lib/types";
 
 export async function POST(
@@ -18,7 +23,7 @@ export async function POST(
   const rt = roomType as RoomType;
 
   try {
-    const oldData = await loadStoredData(rt);
+    const oldData = await loadStoredDataFromSupabase(rt);
 
     // 저장된 글의 articleId 맵 → "이후"의 기준선
     const knownByMenuId = new Map<number, Set<number>>();
@@ -44,7 +49,7 @@ export async function POST(
     // 기존 저장본과 병합해 누적
     const mergedBoards = mergeBoards(oldData?.boards ?? [], freshBoards);
 
-    await saveData(rt, {
+    await saveDataToSupabase(rt, {
       boards: mergedBoards,
       lastUpdated: now,
     });
@@ -57,7 +62,7 @@ export async function POST(
         subject: a.subject,
       }))
     );
-    await autoMarkOldAsSeen(rt, allArticles);
+    await autoMarkOldAsSeenInSupabase(rt, allArticles);
 
     // 새 글 중 제목이 이미 seen된 글과 겹치는 재업로드는 자동 seen
     const newForDedup: { articleId: number; subject: string }[] = [];
@@ -66,7 +71,7 @@ export async function POST(
         newForDedup.push({ articleId: a.articleId, subject: a.subject });
       }
     }
-    const { deduped } = await deduplicateByTitle(rt, newForDedup);
+    const { deduped } = await deduplicateByTitleInSupabase(rt, newForDedup);
     if (deduped.length > 0) {
       const dedupSet = new Set(deduped);
       for (const menuId of Object.keys(newArticlesByBoard)) {
