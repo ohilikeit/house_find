@@ -131,9 +131,17 @@ export async function loadStoredDataFromSupabase(
   };
 }
 
+/**
+ * boards의 fetched_at 갱신 + articles upsert + crawl_metadata 갱신.
+ *
+ * 중요: data.boards에는 "이번에 새로 수집한 글만" 넘긴다. 과거 글은 이미 DB에
+ * 있으므로 다시 쓰지 않는다(매번 전체 재저장 시 데이터에 비례해 느려짐).
+ * metadata의 total_articles는 별도 인자 totalArticles로 받는다.
+ */
 export async function saveDataToSupabase(
   roomType: RoomType,
-  data: StoredData
+  data: StoredData,
+  totalArticles?: number
 ): Promise<void> {
   const supabase = await createClient();
 
@@ -168,17 +176,16 @@ export async function saveDataToSupabase(
     }
   }
 
-  const totalArticles = data.boards.reduce(
-    (sum, b) => sum + b.articles.length,
-    0
-  );
+  const metadataTotal =
+    totalArticles ??
+    data.boards.reduce((sum, b) => sum + b.articles.length, 0);
   await supabase
     .from("crawl_metadata")
     .upsert(
       {
         room_type: roomType,
         last_updated: data.lastUpdated,
-        total_articles: totalArticles,
+        total_articles: metadataTotal,
       },
       { onConflict: "room_type" }
     );

@@ -10,6 +10,10 @@ import {
 } from "@/lib/supabase/database";
 import { Article, CrawlResult, CrawlStats } from "@/lib/types";
 
+// 크롤링은 외부 네트워크 + DB 쓰기가 있어 시간이 걸리므로 한도를 명시한다.
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+
 export async function POST(
   _request: Request,
   { params }: { params: Promise<{ roomType: string }> }
@@ -44,11 +48,18 @@ export async function POST(
     }
 
     const mergedBoards = mergeBoards(oldData?.boards ?? [], freshBoards);
+    const mergedTotal = mergedBoards.reduce(
+      (s, b) => s + b.articles.length,
+      0
+    );
 
-    await saveDataToSupabase(rt, {
-      boards: mergedBoards,
-      lastUpdated: now,
-    });
+    // 이미 DB에 있는 과거 글은 다시 쓰지 않는다. 신규 글(freshBoards)만 저장하고
+    // metadata의 total은 병합 후 전체 개수(mergedTotal)로 넘긴다.
+    await saveDataToSupabase(
+      rt,
+      { boards: freshBoards, lastUpdated: now },
+      mergedTotal
+    );
 
     await autoMarkOldAsSeen(rt);
 

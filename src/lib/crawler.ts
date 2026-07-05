@@ -24,7 +24,9 @@ interface NaverArticle {
 // 네이버 카페 API 실질 상한 (요청과 무관하게 50이 최대치로 관측됨)
 const PER_PAGE = 50;
 // 페이지/보드 사이 딜레이 (rate limiting 방지)
-const DELAY_MS = 2000;
+const DELAY_MS = 800;
+// 개별 네이버 요청 타임아웃 (응답이 없으면 함수 전체가 멈추는 것을 방지)
+const FETCH_TIMEOUT_MS = 8000;
 
 function toArticle(raw: NaverArticle): Article {
   return {
@@ -54,7 +56,23 @@ async function fetchPage(
   });
 
   const url = `${NAVER_API_BASE}?${params}`;
-  const res = await fetch(url, { headers: HEADERS });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: HEADERS, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(
+        `Timeout fetching menu ${menuId} page ${page} (>${FETCH_TIMEOUT_MS}ms)`
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!res.ok) {
     throw new Error(
